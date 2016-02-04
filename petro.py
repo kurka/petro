@@ -7,6 +7,8 @@ import re
 from collections import defaultdict
 import matplotlib.pyplot as plt
 import nltk
+import os
+import json
 
 def rem_accents(text):
     if type(text) == str:
@@ -21,13 +23,14 @@ def get_pdf_text(doc_name):
     text = rem_accents(subprocess.check_output("pdftotext -f 2 '{}' -".format(doc_name), shell=True))
     return capa, text
 
-def get_metadata(doc_info, capa):
+def get_metadata(doc_info, capa, verbose=False):
     #date
     get_data = r'DATA:\s+(\d\d\/\d\d\/\d\d\d\d)'
     res = re.search(get_data, capa, re.M|re.I)
     if res:
         doc_info["date"] = res.group(1)
-        print("date: {}".format(doc_info["date"]))
+        if verbose:
+            print("date: {}".format(doc_info["date"]))
     else:
         print("date not found in file!")
 
@@ -36,7 +39,8 @@ def get_metadata(doc_info, capa):
     res = re.search(get_n_pages, capa, re.M|re.I)
     if res:
         doc_info["n_pages"] = int(res.group(1))
-        print("n_pages: {}".format(doc_info["n_pages"]))
+        if verbose:
+            print("n_pages: {}".format(doc_info["n_pages"]))
     else:
         print("n_pages not found in file!")
 
@@ -60,13 +64,14 @@ def get_metadata(doc_info, capa):
                 depoentes_cargos.append(cargo)
         doc_info["depoentes_names"] = depoentes_names
         doc_info["depoentes_cargos"] = depoentes_cargos
-        for el in zip(doc_info["depoentes_names"], doc_info["depoentes_cargos"]):
-            print(el)
+        if verbose:
+            for el in zip(doc_info["depoentes_names"], doc_info["depoentes_cargos"]):
+                print(el)
 
     return doc_info
 
 
-def clean_text(doc_info, text):
+def clean_text(doc_info, text, verbose=False):
     #limpa texto
     clean_header = r'CAMARA DOS DEPUTADOS - DETAQ(?:.*\n)*?\d\d\/\d\d\/\d\d\d\d'
     clean_num = r'\n\s*\d+\s*\n'
@@ -74,21 +79,28 @@ def clean_text(doc_info, text):
 
     #remove headers
     text, subs = re.subn(clean_header, "", text, flags=re.M)
-    print(subs)
-    assert subs == doc_info["n_pages"], "doing more substitutions than pages!"
+    if verbose:
+        print(subs)
+    #assert subs == doc_info["n_pages"], "doing {} substitutions for {} pages!".format(subs, doc_info["n_pages"])
+    if not subs == doc_info["n_pages"]:
+        print("!!!!!Warning: doing {} substitutions for {} pages!".format(subs, doc_info["n_pages"]))
 
     #remove page numbers
     text, subs = re.subn(clean_num, "\n", text, flags=re.M)
-    print(subs)
-    assert subs == doc_info["n_pages"], "doing more substitutions than pages!"
+    if verbose:
+        print(subs)
+    #assert subs == doc_info["n_pages"], "doing {} substitutions for {} pages!".format(subs, doc_info["n_pages"])
+    if not subs == doc_info["n_pages"]:
+        print("!!!!!Warning: doing {} substitutions for {} pages!".format(subs, doc_info["n_pages"]))
 
     #remove double newlines
     text, subs = re.subn(clean_mult_n, "", text, flags=re.M)
-    print(subs)
+    if verbose:
+        print(subs)
 
     return text
 
-def get_falas(doc_info, text):
+def get_falas(doc_info, text, verbose=False):
     doc_info["text"] = dict()
     for depoente in doc_info["depoentes_names"]:
         doc_info["text"][depoente] = dict()
@@ -97,32 +109,34 @@ def get_falas(doc_info, text):
         #regex_str = r'^.+{}\s+-\s+(.*\n(?:.*\n)*?)(?:^O\s+SR|A\s+SRA)'.format(depoente)
         frases_regex = re.compile(regex_str, re.M)
         frases = frases_regex.findall(text)
-        print("\n>>>>>{}".format(depoente))
-        print(len(frases))
+        if verbose:
+            print("\n>>>>>{}".format(depoente))
+            print(len(frases))
         for i,f in enumerate(frases):
             ff = re.sub(r'([^.])\n', r'\1 ', f, flags=re.M)
             ff = ff.strip()
             doc_info["text"][depoente]["falas"].append(ff)
-            print("{}: {}".format(i+1, ff))
+            if verbose:
+                print("{}: {}".format(i+1, ff))
 
     return doc_info
 
 
-def text_statistics(doc_info):
+def text_statistics(doc_info, verbose=False):
     #each document statistics
     for n in doc_info["depoentes_names"]:
         doc_info["text"][n]["n_answers"] = len(doc_info["text"][n]["falas"])
         doc_info["text"][n]["len_char_answers"] = sum(len(f) for f in doc_info["text"][n]["falas"])
-        doc_info["text"][n]["avg_len_char_answers"] = doc_info["text"][n]["len_char_answers"] / doc_info["text"][n]["n_answers"]
+        doc_info["text"][n]["avg_len_char_answers"] = doc_info["text"][n]["len_char_answers"] / doc_info["text"][n]["n_answers"] if doc_info["text"][n]["n_answers"] else  0
         doc_info["text"][n]["len_words_answers"] = sum(len(re.split(r'\W+', f)) for f in doc_info["text"][n]["falas"])
-        doc_info["text"][n]["avg_len_words_answers"] = doc_info["text"][n]["len_words_answers"] / doc_info["text"][n]["n_answers"]
+        doc_info["text"][n]["avg_len_words_answers"] = doc_info["text"][n]["len_words_answers"] / doc_info["text"][n]["n_answers"] if doc_info["text"][n]["n_answers"] else  0
         doc_info["text"][n]["silence_answers"] = sum(1 if re.search(r'silenci', f, re.I) else 0 for f in doc_info["text"][n]["falas"])
         ## non-silence stats
         doc_info["text"][n]["n_answers_ns"] = doc_info["text"][n]["n_answers"] - doc_info["text"][n]["silence_answers"]
         doc_info["text"][n]["len_char_answers_ns"] = sum(len(f) for f in doc_info["text"][n]["falas"] if not re.search(r'silenci', f, re.I))
-        doc_info["text"][n]["avg_len_char_answers_ns"] = doc_info["text"][n]["len_char_answers_ns"] / doc_info["text"][n]["n_answers_ns"]
+        doc_info["text"][n]["avg_len_char_answers_ns"] = doc_info["text"][n]["len_char_answers_ns"] / doc_info["text"][n]["n_answers_ns"] if doc_info["text"][n]["n_answers_ns"] else  0
         doc_info["text"][n]["len_words_answers_ns"] = sum(len(re.split(r'\W+', f)) for f in doc_info["text"][n]["falas"] if not re.search(r'silenci', f, re.I))
-        doc_info["text"][n]["avg_len_words_answers_ns"] = doc_info["text"][n]["len_words_answers_ns"] / doc_info["text"][n]["n_answers_ns"]
+        doc_info["text"][n]["avg_len_words_answers_ns"] = doc_info["text"][n]["len_words_answers_ns"] / doc_info["text"][n]["n_answers_ns"] if doc_info["text"][n]["n_answers_ns"] else  0
 
 
     #general statistics
@@ -136,11 +150,12 @@ def text_statistics(doc_info):
     ## non-silence stats
     doc_info["text"]["general"]["n_answers_ns"] = doc_info["text"]["general"]["n_answers"] - doc_info["text"]["general"]["silence_answers"]
     doc_info["text"]["general"]["len_char_answers_ns"] = sum(doc_info["text"][n]["len_char_answers_ns"] for n in doc_info["depoentes_names"])
-    doc_info["text"]["general"]["avg_len_char_answers_ns"] = doc_info["text"]["general"]["len_char_answers_ns"] / doc_info["text"]["general"]["n_answers_ns"]
+    doc_info["text"]["general"]["avg_len_char_answers_ns"] = doc_info["text"]["general"]["len_char_answers_ns"] / doc_info["text"]["general"]["n_answers_ns"] if doc_info["text"]["general"]["n_answers_ns"] else 0
     doc_info["text"]["general"]["len_words_answers_ns"] = sum(doc_info["text"][n]["len_words_answers_ns"] for n in doc_info["depoentes_names"])
-    doc_info["text"]["general"]["avg_len_words_answers_ns"] = doc_info["text"]["general"]["len_words_answers_ns"] / doc_info["text"]["general"]["n_answers_ns"]
+    doc_info["text"]["general"]["avg_len_words_answers_ns"] = doc_info["text"]["general"]["len_words_answers_ns"] / doc_info["text"]["general"]["n_answers_ns"] if doc_info["text"]["general"]["n_answers_ns"] else 0
 
-    print(doc_info["text"]["general"])
+    if verbose:
+        print(doc_info["text"]["general"])
 
     return doc_info
 
@@ -166,18 +181,29 @@ def do_wordcloud(doc_info):
 
 
 def process_doc(doc_name):
+    print("\n\n\n>>>>>>>>Processing {}\n\n".format(doc_name))
     doc_info = dict()
     capa, text = get_pdf_text(doc_name)
     # Treat cover page
-    doc_info = get_metadata(doc_info, capa)
+    doc_info = get_metadata(doc_info, capa, verbose=True)
     # Treat the rest of the text
-    text = clean_text(doc_info, text)
+    text = clean_text(doc_info, text, verbose=True)
     # Get people phrases
     doc_info = get_falas(doc_info, text)
     doc_info = text_statistics(doc_info)
     #do_wordcloud(doc_info)
 
+    #TODO: present document
+
     return doc_info
 
 if __name__ == '__main__':
-    process_doc('01.09-2015-  Odebrecht.pdf')
+    files_dir = "docs/petro"
+    files = subprocess.check_output("ls {}".format(files_dir), shell=True)
+    all_docs_infos = {}
+    for f in files.split("\n")[:-1]:
+        all_docs_infos[f] = process_doc(os.path.join(files_dir, f))
+    with open("result.json", "w") as fp:
+        json.dump(all_docs_infos, fp)
+
+    #print(all_docs_infos)
